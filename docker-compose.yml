@@ -1,0 +1,17 @@
+# Opcional: levanta PostgreSQL en Docker con los mismos datos de .env.example
+#   docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    container_name: agricola-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agricola
+    ports:
+      - "5432:5432"
+    volumes:
+      - agricola-data:/var/lib/postgresql/data
+
+volumes:
+  agricola-data:

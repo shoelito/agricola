@@ -1,0 +1,813 @@
+openapi: 3.0.3
+info:
+  title: API - Sistema de gestión de análisis de suelos
+  version: 1.0.0
+  description: |
+    API REST para gestionar productores, parcelas, análisis de suelos y recomendaciones
+    de fertilización para pequeños productores agrícolas.
+
+    **Convenciones**
+    - Todas las peticiones y respuestas usan JSON.
+    - `PUT` es una **actualización parcial**: solo se modifican los campos enviados.
+    - Las fechas usan el formato `AAAA-MM-DD`.
+    - El área de las parcelas está en **m²**.
+    - Los errores siempre responden `{ "error": "mensaje", "detalles": [...] }`.
+
+    **Flujo típico del frontend**
+    1. Registrar un productor → `POST /productores`
+    2. Crear su parcela → `POST /parcelas`
+    3. Registrar un análisis de suelo → `POST /parcelas/{id}/analisis`
+    4. Generar la recomendación → `POST /analisis/{id}/recomendaciones`
+    5. Consultar el historial → `GET /parcelas/{id}/analisis`
+
+servers:
+  - url: http://localhost:3000/api
+    description: Desarrollo local
+
+tags:
+  - name: Sistema
+  - name: Productores
+    description: Registro de productores y técnicos agrícolas.
+  - name: Parcelas
+    description: Parcelas de cada productor, con su área y ubicación.
+  - name: Análisis
+    description: Análisis de suelo de una parcela y su historial.
+  - name: Recomendaciones
+    description: |
+      Cálculo de fertilizante según el área de la parcela:
+
+      `cantidad (g) = (área m² / m2_base) × gramos_fertilizante`
+
+      Ejemplo: 500 m² con 50 g por cada 10 m² → (500 / 10) × 50 = **2500 g**.
+  - name: Nutrientes
+    description: Catálogo de nutrientes que se miden en los análisis.
+  - name: Cultivos
+    description: Catálogo de cultivos y su dosis de fertilizante.
+
+paths:
+  # ---------------------------------------------------------------- Sistema
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Estado de la API y de la base de datos
+      operationId: health
+      responses:
+        '200':
+          description: La API y la base de datos responden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  estado: { type: string, example: ok }
+                  baseDeDatos: { type: string, example: conectada }
+        '503': { $ref: '#/components/responses/SinBaseDeDatos' }
+
+  # ---------------------------------------------------------------- Productores
+  /productores:
+    get:
+      tags: [Productores]
+      summary: Listar productores
+      description: Ordenados por apellido y nombre.
+      operationId: listarProductores
+      responses:
+        '200':
+          description: Lista de productores
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Productor' }
+    post:
+      tags: [Productores]
+      summary: Registrar un productor
+      operationId: crearProductor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductorNuevo' }
+      responses:
+        '201':
+          description: Productor creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Productor' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /productores/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Productores]
+      summary: Ver un productor
+      operationId: obtenerProductor
+      responses:
+        '200':
+          description: Productor encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Productor' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Productores]
+      summary: Actualizar un productor
+      description: Actualización parcial, solo se modifican los campos enviados.
+      operationId: actualizarProductor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductorCampos' }
+            example: { telefono: '8888-1111' }
+      responses:
+        '200':
+          description: Productor actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Productor' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+    delete:
+      tags: [Productores]
+      summary: Eliminar un productor
+      description: '**Elimina también** sus parcelas, análisis y recomendaciones.'
+      operationId: eliminarProductor
+      responses:
+        '204': { description: Productor eliminado }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /productores/{id}/parcelas:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Productores, Parcelas]
+      summary: Parcelas de un productor
+      operationId: listarParcelasDeProductor
+      responses:
+        '200':
+          description: Lista de parcelas del productor
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Parcela' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Parcelas
+  /parcelas:
+    get:
+      tags: [Parcelas]
+      summary: Listar parcelas
+      operationId: listarParcelas
+      parameters:
+        - name: id_productor
+          in: query
+          required: false
+          description: Filtra las parcelas de un productor
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Lista de parcelas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Parcela' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+    post:
+      tags: [Parcelas]
+      summary: Crear una parcela
+      operationId: crearParcela
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ParcelaNueva' }
+      responses:
+        '201':
+          description: Parcela creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Parcela' }
+        '400':
+          description: Datos inválidos o el productor no existe
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /parcelas/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Parcelas]
+      summary: Ver una parcela
+      operationId: obtenerParcela
+      responses:
+        '200':
+          description: Parcela encontrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Parcela' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Parcelas]
+      summary: Actualizar una parcela
+      description: Actualización parcial, solo se modifican los campos enviados.
+      operationId: actualizarParcela
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ParcelaCampos' }
+            example: { area: 750 }
+      responses:
+        '200':
+          description: Parcela actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Parcela' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    delete:
+      tags: [Parcelas]
+      summary: Eliminar una parcela
+      description: '**Elimina también** sus análisis y recomendaciones.'
+      operationId: eliminarParcela
+      responses:
+        '204': { description: Parcela eliminada }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Análisis
+  /parcelas/{id}/analisis:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Análisis]
+      summary: Historial de análisis de una parcela
+      description: |
+        Del más reciente al más antiguo, cada uno con sus nutrientes.
+        Sirve para las tablas y gráficos de evolución (pH, materia orgánica, etc.).
+      operationId: historialParcela
+      responses:
+        '200':
+          description: Historial de la parcela
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Analisis' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    post:
+      tags: [Análisis]
+      summary: Registrar un análisis de suelo
+      description: |
+        Todos los campos son opcionales. Si no se envía `fecha_analisis` se usa la fecha de hoy.
+        `detalles` es la lista de nutrientes medidos; un nutriente no puede repetirse.
+      operationId: crearAnalisis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnalisisNuevo' }
+      responses:
+        '201':
+          description: Análisis creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Analisis' }
+        '400':
+          description: Datos inválidos, nutriente repetido o nutriente inexistente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  /analisis/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Análisis]
+      summary: Ver un análisis completo
+      description: Incluye sus nutrientes y las recomendaciones generadas.
+      operationId: obtenerAnalisis
+      responses:
+        '200':
+          description: Análisis encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AnalisisCompleto' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Análisis]
+      summary: Actualizar un análisis
+      description: |
+        Actualización parcial. Si se envía `detalles`, **reemplaza por completo**
+        la lista de nutrientes del análisis (los que no se envíen se eliminan).
+      operationId: actualizarAnalisis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnalisisNuevo' }
+            example: { ph: 6.4 }
+      responses:
+        '200':
+          description: Análisis actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Analisis' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    delete:
+      tags: [Análisis]
+      summary: Eliminar un análisis
+      description: '**Elimina también** sus nutrientes y recomendaciones.'
+      operationId: eliminarAnalisis
+      responses:
+        '204': { description: Análisis eliminado }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Recomendaciones
+  /analisis/{id}/recomendaciones:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Recomendaciones]
+      summary: Recomendaciones de un análisis
+      operationId: listarRecomendaciones
+      responses:
+        '200':
+          description: Lista de recomendaciones, de la más reciente a la más antigua
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Recomendacion' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    post:
+      tags: [Recomendaciones]
+      summary: Generar una recomendación de fertilización
+      description: |
+        Calcula los gramos de fertilizante para la parcela del análisis y guarda la recomendación.
+
+        La dosis se toma de:
+        1. `gramos_fertilizante` y `m2_base` enviados en el cuerpo, o
+        2. la dosis configurada en el cultivo indicado en `id_cultivo`.
+
+        Si no hay ninguna de las dos, responde 400.
+      operationId: generarRecomendacion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecomendacionNueva' }
+            examples:
+              dosisManual:
+                summary: Con una dosis indicada a mano
+                value: { gramos_fertilizante: 50, m2_base: 10 }
+              dosisDelCultivo:
+                summary: Con la dosis del cultivo
+                value: { id_cultivo: 1, descripcion: Aplicar antes de la siembra }
+      responses:
+        '201':
+          description: Recomendación generada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recomendacion' }
+        '400':
+          description: Datos inválidos o no hay dosis para calcular
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: 'No hay dosis para calcular: envíe gramos_fertilizante y m2_base, o un id_cultivo que tenga la dosis configurada'
+        '404':
+          description: El análisis o el cultivo no existe
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /recomendaciones/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Recomendaciones]
+      summary: Ver una recomendación
+      operationId: obtenerRecomendacion
+      responses:
+        '200':
+          description: Recomendación encontrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Recomendacion' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    delete:
+      tags: [Recomendaciones]
+      summary: Eliminar una recomendación
+      operationId: eliminarRecomendacion
+      responses:
+        '204': { description: Recomendación eliminada }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+  # ---------------------------------------------------------------- Nutrientes
+  /nutrientes:
+    get:
+      tags: [Nutrientes]
+      summary: Listar nutrientes
+      operationId: listarNutrientes
+      responses:
+        '200':
+          description: Lista de nutrientes
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Nutriente' }
+    post:
+      tags: [Nutrientes]
+      summary: Crear un nutriente
+      operationId: crearNutriente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NutrienteNuevo' }
+      responses:
+        '201':
+          description: Nutriente creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Nutriente' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /nutrientes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Nutrientes]
+      summary: Ver un nutriente
+      operationId: obtenerNutriente
+      responses:
+        '200':
+          description: Nutriente encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Nutriente' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Nutrientes]
+      summary: Actualizar un nutriente
+      operationId: actualizarNutriente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NutrienteCampos' }
+      responses:
+        '200':
+          description: Nutriente actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Nutriente' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+    delete:
+      tags: [Nutrientes]
+      summary: Eliminar un nutriente
+      description: No se puede eliminar si ya se usa en algún análisis (responde 409).
+      operationId: eliminarNutriente
+      responses:
+        '204': { description: Nutriente eliminado }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/EnUso' }
+
+  # ---------------------------------------------------------------- Cultivos
+  /cultivos:
+    get:
+      tags: [Cultivos]
+      summary: Listar cultivos
+      operationId: listarCultivos
+      responses:
+        '200':
+          description: Lista de cultivos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Cultivo' }
+    post:
+      tags: [Cultivos]
+      summary: Crear un cultivo
+      operationId: crearCultivo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CultivoNuevo' }
+      responses:
+        '201':
+          description: Cultivo creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cultivo' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+
+  /cultivos/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      tags: [Cultivos]
+      summary: Ver un cultivo
+      operationId: obtenerCultivo
+      responses:
+        '200':
+          description: Cultivo encontrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cultivo' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+    put:
+      tags: [Cultivos]
+      summary: Actualizar un cultivo
+      operationId: actualizarCultivo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CultivoCampos' }
+            example: { gramos_fertilizante: 40 }
+      responses:
+        '200':
+          description: Cultivo actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cultivo' }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+        '409': { $ref: '#/components/responses/Duplicado' }
+    delete:
+      tags: [Cultivos]
+      summary: Eliminar un cultivo
+      description: Las recomendaciones que lo usaban se conservan, con `id_cultivo` en `null`.
+      operationId: eliminarCultivo
+      responses:
+        '204': { description: Cultivo eliminado }
+        '400': { $ref: '#/components/responses/DatosInvalidos' }
+        '404': { $ref: '#/components/responses/NoEncontrado' }
+
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      description: Identificador numérico del registro
+      schema: { type: integer, minimum: 1, example: 1 }
+
+  responses:
+    DatosInvalidos:
+      description: Datos inválidos o faltantes
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: Datos inválidos
+            detalles: [nombre es obligatorio, area debe ser mayor o igual a 0.01]
+    NoEncontrado:
+      description: El registro no existe
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: Productor no encontrado }
+    Duplicado:
+      description: Ya existe un registro con ese valor
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: Ya existe un registro con ese valor
+            detalle: Key (identificacion)=(205550555) already exists.
+    EnUso:
+      description: No se puede eliminar porque otros registros lo usan
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: 'No se puede eliminar: hay registros que dependen de este' }
+    SinBaseDeDatos:
+      description: La base de datos no está disponible
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, description: Mensaje para mostrar al usuario }
+        detalles:
+          type: array
+          items: { type: string }
+          description: Lista de campos con problemas (solo en errores de validación)
+        detalle:
+          type: string
+          description: Detalle técnico de la base de datos (solo en algunos 400/409)
+
+    # ---- Productor
+    ProductorCampos:
+      type: object
+      properties:
+        nombre: { type: string, maxLength: 100, example: Ana }
+        apellido: { type: string, maxLength: 100, example: Mora }
+        identificacion: { type: string, maxLength: 30, description: Única por productor, example: '205550555' }
+        telefono: { type: string, maxLength: 30, nullable: true, example: '8888-1111' }
+        correo: { type: string, maxLength: 150, nullable: true, example: ana@correo.com }
+        direccion: { type: string, nullable: true, example: 'San Carlos, Alajuela' }
+    ProductorNuevo:
+      allOf:
+        - $ref: '#/components/schemas/ProductorCampos'
+        - required: [nombre, apellido, identificacion]
+    Productor:
+      allOf:
+        - type: object
+          required: [id_productor]
+          properties:
+            id_productor: { type: integer, example: 1 }
+        - $ref: '#/components/schemas/ProductorNuevo'
+
+    # ---- Parcela
+    ParcelaCampos:
+      type: object
+      properties:
+        nombre_parcela: { type: string, maxLength: 100, example: Lote Sur }
+        ubicacion: { type: string, maxLength: 255, nullable: true, example: Finca La Esperanza }
+        area: { type: number, minimum: 0.01, description: Área en m², example: 500 }
+        coordenadas_gps: { type: string, maxLength: 255, nullable: true, description: Texto libre, example: '10.3236, -84.4271' }
+        id_productor: { type: integer, minimum: 1, example: 1 }
+    ParcelaNueva:
+      allOf:
+        - $ref: '#/components/schemas/ParcelaCampos'
+        - required: [nombre_parcela, area, id_productor]
+    Parcela:
+      allOf:
+        - type: object
+          required: [id_parcela]
+          properties:
+            id_parcela: { type: integer, example: 1 }
+        - $ref: '#/components/schemas/ParcelaNueva'
+
+    # ---- Nutriente
+    NutrienteCampos:
+      type: object
+      properties:
+        nombre: { type: string, maxLength: 50, description: Único, example: Nitrógeno (N) }
+        unidad_medida: { type: string, maxLength: 30, nullable: true, example: '%' }
+    NutrienteNuevo:
+      allOf:
+        - $ref: '#/components/schemas/NutrienteCampos'
+        - required: [nombre]
+    Nutriente:
+      allOf:
+        - type: object
+          required: [id_nutriente]
+          properties:
+            id_nutriente: { type: integer, example: 1 }
+        - $ref: '#/components/schemas/NutrienteNuevo'
+
+    # ---- Cultivo
+    CultivoCampos:
+      type: object
+      properties:
+        nombre_cultivo: { type: string, maxLength: 100, description: Único, example: Maíz }
+        requerimientos_suelo: { type: string, nullable: true, example: 'pH 5.5 - 7.0, suelos francos y bien drenados' }
+        ciclo_produccion: { type: string, maxLength: 100, nullable: true, example: 120 días }
+        gramos_fertilizante:
+          type: number
+          minimum: 0.01
+          nullable: true
+          description: Gramos de fertilizante que se aplican por cada `m2_base` m²
+          example: 35
+        m2_base:
+          type: number
+          minimum: 0.01
+          nullable: true
+          description: Cantidad de m² a los que corresponde `gramos_fertilizante`
+          example: 1
+    CultivoNuevo:
+      allOf:
+        - $ref: '#/components/schemas/CultivoCampos'
+        - required: [nombre_cultivo]
+    Cultivo:
+      allOf:
+        - type: object
+          required: [id_cultivo]
+          properties:
+            id_cultivo: { type: integer, example: 1 }
+        - $ref: '#/components/schemas/CultivoNuevo'
+
+    # ---- Análisis
+    DetalleNuevo:
+      type: object
+      required: [id_nutriente, valor]
+      properties:
+        id_nutriente: { type: integer, minimum: 1, example: 1 }
+        valor: { type: string, maxLength: 50, description: Valor medido (texto), example: '0.2' }
+    Detalle:
+      type: object
+      properties:
+        id_detalle: { type: integer, example: 1 }
+        id_nutriente: { type: integer, example: 1 }
+        nutriente: { type: string, description: Nombre del nutriente, example: Nitrógeno (N) }
+        unidad_medida: { type: string, nullable: true, example: '%' }
+        valor: { type: string, example: '0.2' }
+    AnalisisCampos:
+      type: object
+      properties:
+        fecha_analisis: { type: string, format: date, example: '2026-10-01' }
+        ph: { type: number, minimum: 0, maximum: 14, nullable: true, example: 6.1 }
+        materia_organica: { type: number, minimum: 0, maximum: 100, nullable: true, description: Porcentaje, example: 3.2 }
+        textura: { type: string, maxLength: 50, nullable: true, example: Franco arcilloso }
+        humedad: { type: number, minimum: 0, maximum: 100, nullable: true, description: Porcentaje, example: 25 }
+        observaciones: { type: string, nullable: true, example: Muestra tomada a 20 cm }
+    AnalisisNuevo:
+      allOf:
+        - $ref: '#/components/schemas/AnalisisCampos'
+        - type: object
+          properties:
+            detalles:
+              type: array
+              description: Nutrientes medidos. Un nutriente no puede repetirse.
+              items: { $ref: '#/components/schemas/DetalleNuevo' }
+              example:
+                - { id_nutriente: 1, valor: '0.2' }
+                - { id_nutriente: 2, valor: '10' }
+    Analisis:
+      allOf:
+        - type: object
+          required: [id_analisis, id_parcela, fecha_analisis, detalles]
+          properties:
+            id_analisis: { type: integer, example: 1 }
+            id_parcela: { type: integer, example: 1 }
+        - $ref: '#/components/schemas/AnalisisCampos'
+        - type: object
+          properties:
+            detalles:
+              type: array
+              items: { $ref: '#/components/schemas/Detalle' }
+    AnalisisCompleto:
+      allOf:
+        - $ref: '#/components/schemas/Analisis'
+        - type: object
+          required: [recomendaciones]
+          properties:
+            recomendaciones:
+              type: array
+              items: { $ref: '#/components/schemas/Recomendacion' }
+
+    # ---- Recomendación
+    RecomendacionNueva:
+      type: object
+      properties:
+        id_cultivo:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Cultivo al que aplica. Si no se envía dosis, se usa la del cultivo.
+          example: 1
+        gramos_fertilizante: { type: number, minimum: 0.01, description: Gramos por cada `m2_base` m², example: 50 }
+        m2_base: { type: number, minimum: 0.01, example: 10 }
+        tipo_recomendacion: { type: string, maxLength: 50, default: Fertilización }
+        descripcion: { type: string, description: Nota adicional que se agrega al texto generado }
+    Recomendacion:
+      type: object
+      properties:
+        id_recomendacion: { type: integer, example: 1 }
+        tipo_recomendacion: { type: string, example: Fertilización }
+        descripcion:
+          type: string
+          example: Aplicar 2500 g (2.5 kg) de fertilizante en la parcela "Lote Sur" (500 m²), a razón de 50 g por cada 10 m².
+        fecha: { type: string, format: date, example: '2026-11-23' }
+        cantidad_fertilizante_g: { type: number, nullable: true, description: Resultado del cálculo en gramos, example: 2500 }
+        id_analisis: { type: integer, example: 1 }
+        id_cultivo: { type: integer, nullable: true, example: null }
+        nombre_cultivo: { type: string, nullable: true, example: null }
